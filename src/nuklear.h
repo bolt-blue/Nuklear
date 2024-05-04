@@ -246,6 +246,7 @@ struct nk_style_edit;
 struct nk_style_property;
 struct nk_style_chart;
 struct nk_style_combo;
+struct nk_style_card;
 struct nk_style_tab;
 struct nk_style_window_header;
 struct nk_style_window;
@@ -3371,6 +3372,13 @@ NK_API void nk_contextual_close(struct nk_context*);
 NK_API void nk_contextual_end(struct nk_context*);
 /* =============================================================================
  *
+ *                                  CARD
+ *
+ * ============================================================================= */
+NK_API nk_bool nk_card_begin(struct nk_context *, float, const struct nk_style_card *);
+NK_API void nk_card_end(struct nk_context *);
+/* =============================================================================
+ *
  *                                  TOOLTIP
  *
  * ============================================================================= */
@@ -5032,6 +5040,42 @@ struct nk_style_combo {
     struct nk_vec2 spacing;
     float color_factor;
     float disabled_factor;
+};
+
+/*
+ * NOTE: Copied almost entirely from nk_style_button. Mostly unused at present.
+ * But I believe all or most should server a purpose. We shall see.
+ */
+struct nk_style_card {
+    /* background */
+    struct nk_style_item normal;
+    struct nk_style_item hover;
+    struct nk_style_item active;
+    struct nk_color border_color;
+    float color_factor_background;
+
+    /* text */
+    struct nk_color text_background;
+    struct nk_color text_normal;
+    struct nk_color text_hover;
+    struct nk_color text_active;
+    nk_flags text_alignment;
+    float color_factor_text;
+
+    /* properties */
+    float border;
+    float rounding;
+    struct nk_vec2 margin;
+    struct nk_vec2 padding;
+    struct nk_vec2 touch_padding;
+    float disabled_factor;
+
+#if 0
+    /* optional user callbacks */
+    nk_handle userdata;
+    void(*draw_begin)(struct nk_command_buffer*, nk_handle userdata);
+    void(*draw_end)(struct nk_command_buffer*, nk_handle userdata);
+#endif
 };
 
 struct nk_style_tab {
