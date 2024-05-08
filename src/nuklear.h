@@ -250,6 +250,7 @@ struct nk_style_card;
 struct nk_style_tab;
 struct nk_style_window_header;
 struct nk_style_window;
+struct nk_style_text;
 
 enum {nk_false, nk_true};
 struct nk_color {nk_byte r,g,b,a;};
@@ -3375,7 +3376,7 @@ NK_API void nk_contextual_end(struct nk_context*);
  *                                  CARD
  *
  * ============================================================================= */
-NK_API nk_bool nk_card_begin(struct nk_context *, float, const struct nk_style_card *);
+NK_API nk_bool nk_card_begin(struct nk_context *, float, const struct nk_style_card *, struct nk_style_text *, nk_bool *);
 NK_API void nk_card_end(struct nk_context *);
 /* =============================================================================
  *

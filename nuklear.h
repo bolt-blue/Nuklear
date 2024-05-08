@@ -472,6 +472,7 @@ struct nk_style_card;
 struct nk_style_tab;
 struct nk_style_window_header;
 struct nk_style_window;
+struct nk_style_text;
 
 enum {nk_false, nk_true};
 struct nk_color {nk_byte r,g,b,a;};
@@ -3597,7 +3598,7 @@ NK_API void nk_contextual_end(struct nk_context*);
  *                                  CARD
  *
  * ============================================================================= */
-NK_API nk_bool nk_card_begin(struct nk_context *, float, const struct nk_style_card *);
+NK_API nk_bool nk_card_begin(struct nk_context *, float, const struct nk_style_card *, struct nk_style_text *, nk_bool *);
 NK_API void nk_card_end(struct nk_context *);
 /* =============================================================================
  *
@@ -30134,6 +30135,102 @@ nk_tooltipfv(struct nk_context *ctx, const char *fmt, va_list args)
  *
  * ========================================================================== */
 
+NK_LIB const struct nk_style_item*
+nk_draw_card(struct nk_command_buffer *out,
+    const struct nk_rect *bounds, nk_flags state,
+    const struct nk_style_card *style, struct nk_color *window_background)
+{
+    const struct nk_style_item *background;
+    if (state & NK_WIDGET_STATE_HOVER)
+        background = &style->hover;
+    else if (state & NK_WIDGET_STATE_ACTIVED)
+        background = &style->active;
+    else background = &style->normal;
+
+    struct nk_color color = nk_rgb_factor(background->data.color, style->color_factor_background);
+
+    // Set the dynamic window background. Without this, the caller would
+    // have to manually set it if they place e.g. a nk_group_begin inside
+    // the card.
+    // This assumes the card color is different from the existing window
+    // background.
+    if (window_background)
+        *window_background = color;
+
+    nk_fill_rect(out, *bounds, style->rounding, color);
+    nk_stroke_rect(out, *bounds, style->rounding, style->border,
+        nk_rgb_factor(style->border_color, style->color_factor_background));
+
+    return background;
+}
+NK_LIB nk_bool
+nk_card_behavior(nk_flags *state, struct nk_rect r, const struct nk_input *i)
+{
+    int ret = 0;
+    nk_widget_state_reset(state);
+    if (!i) return 0;
+    if (nk_input_is_mouse_hovering_rect(i, r)) {
+        *state = NK_WIDGET_STATE_HOVERED;
+        if (nk_input_is_mouse_down(i, NK_BUTTON_LEFT))
+            *state = NK_WIDGET_STATE_ACTIVE;
+        if (nk_input_has_mouse_click_in_button_rect(i, NK_BUTTON_LEFT, r)) {
+            ret =
+#ifdef NK_BUTTON_TRIGGER_ON_RELEASE
+                nk_input_is_mouse_released(i, NK_BUTTON_LEFT);
+#else
+                nk_input_is_mouse_pressed(i, NK_BUTTON_LEFT);
+#endif
+        }
+    }
+    if (*state & NK_WIDGET_STATE_HOVER && !nk_input_is_mouse_prev_hovering_rect(i, r))
+        *state |= NK_WIDGET_STATE_ENTERED;
+    else if (nk_input_is_mouse_prev_hovering_rect(i, r))
+        *state |= NK_WIDGET_STATE_LEFT;
+    return ret;
+}
+
+NK_LIB nk_bool
+nk_do_card(nk_flags *state, struct nk_command_buffer *out, struct nk_rect bounds,
+    const struct nk_style_card *style, const struct nk_input *in,
+    struct nk_color *window_background, struct nk_style_text *text)
+{
+    struct nk_rect touch_bounds;
+    nk_bool ret = nk_false;
+
+    NK_ASSERT(state);
+    NK_ASSERT(style);
+    NK_ASSERT(out);
+    if (!out || !style)
+        return nk_false;
+
+    /* execute button behavior */
+    touch_bounds.x = bounds.x - style->touch_padding.x;
+    touch_bounds.y = bounds.y - style->touch_padding.y;
+    touch_bounds.w = bounds.w + 2 * style->touch_padding.x;
+    touch_bounds.h = bounds.h + 2 * style->touch_padding.y;
+
+    ret = nk_card_behavior(state, touch_bounds, in);
+
+    const struct nk_style_item *background;
+    background = nk_draw_card(out, &bounds, *state, style, window_background);
+
+    // TODO: Remove background from above call?
+    (void)background;
+
+    /* set text color */
+    if (text) {
+        if (*state & NK_WIDGET_STATE_HOVER)
+            text->color = style->text_hover;
+        else if (*state & NK_WIDGET_STATE_ACTIVED)
+            text->color = style->text_active;
+        else text->color = style->text_normal;
+
+        text->color = nk_rgb_factor(text->color, style->color_factor_text);
+    }
+
+    return ret;
+}
+
 /*
  * nk_card_xxx _heavily_ borrows from nk_group_xxx.  It is therefore based on
  * nk_window, but simplified.
@@ -30151,17 +30248,30 @@ nk_tooltipfv(struct nk_context *ctx, const char *fmt, va_list args)
  *  - Would remove the requirement of NK_WINDOW_DYNAMIC to set the panel color
  */
 NK_API nk_bool
-nk_card_begin(struct nk_context *ctx, float height, const struct nk_style_card *style)
+nk_card_begin(struct nk_context *ctx, float height, const struct nk_style_card *style,
+    struct nk_style_text *text_style, nk_bool *pressed_state)
 {
     struct nk_rect bounds;
+    struct nk_rect content;
     struct nk_window panel;
+
     struct nk_window *win;
+    struct nk_panel *layout;
+    struct nk_command_buffer *out;
+    const struct nk_input *in;
+
+    enum nk_widget_layout_states state;
+
     int id_len;
     nk_hash id_hash;
     nk_flags flags = NK_WINDOW_NO_SCROLLBAR|NK_WINDOW_DYNAMIC;
     nk_uint *x_offset;
     nk_uint *y_offset;
 
+    NK_ASSERT(ctx);
+    NK_ASSERT(ctx->current);
+    NK_ASSERT(ctx->current->layout);
+    NK_ASSERT(style);
     // If padding is insufficient to balance rounding, drawing overlap may
     // occur, depending on what the caller places inside the card.
     // From visual inspection, padding can actually be a little less than half
@@ -30169,41 +30279,13 @@ nk_card_begin(struct nk_context *ctx, float height, const struct nk_style_card *
     // so have opted for something simple for now.
     NK_ASSERT(style->padding.x * 2 >= style->rounding
         && style->padding.y * 2 >= style->rounding);
+    if (!ctx || !ctx->current || !ctx->current->layout || !style) return 0;
+
+    win = ctx->current;
+    out = &win->buffer;
 
     float total_height = height + style->margin.y * 2;
     nk_row_layout(ctx, NK_DYNAMIC, total_height, 1, 0);
-
-    win = ctx->current;
-    nk_panel_alloc_space(&bounds, ctx);
-
-    {const struct nk_rect *c = &win->layout->clip;
-    if (!NK_INTERSECT(c->x, c->y, c->w, c->h, bounds.x, bounds.y, bounds.w, bounds.h)) {
-        return 0;
-    }}
-    if (win->flags & NK_WINDOW_ROM)
-        flags |= NK_WINDOW_ROM;
-
-    bounds.x += style->margin.x;
-    bounds.y += style->margin.y;
-    bounds.w -= style->margin.x * 2;
-    bounds.h -= style->margin.y * 2;
-
-    // TODO: Choose color based on normal, hover or active
-    struct nk_command_buffer *out = &win->buffer;
-    struct nk_color color = style->normal.data.color;
-    nk_fill_rect(out, bounds, style->rounding, color);
-    // Also set the dynamic window background. Without this, the caller would
-    // have to manually set it if they place e.g. a nk_group_begin inside
-    // the card.
-    // This assumed the card color is different from the existing window
-    // background.
-    // TODO: Only update window.background if a style color has been set
-    ctx->style.window.background = style->normal.data.color;
-
-    bounds.x += style->padding.x;
-    bounds.y += style->padding.y;
-    bounds.w -= style->padding.x * 2;
-    bounds.h -= style->padding.y * 2;
 
     // WARNING: Reusing the same id for every instance of an nk_card. This is
     // possibly a terrible idea, but appears to work as long as we don't try
@@ -30223,9 +30305,41 @@ nk_card_begin(struct nk_context *ctx, float height, const struct nk_style_card *
         *x_offset = *y_offset = 0;
     } else y_offset = nk_find_value(win, id_hash+1);
 
+    nk_panel_alloc_space(&bounds, ctx);
+
+    {const struct nk_rect *c = &win->layout->clip;
+    if (!NK_INTERSECT(c->x, c->y, c->w, c->h, bounds.x, bounds.y, bounds.w, bounds.h)) {
+        return 0;
+    }}
+    if (win->flags & NK_WINDOW_ROM)
+        flags |= NK_WINDOW_ROM;
+
+    // TODO: Remove margin option? It seems out of keeping with the lib.
+    bounds.x += style->margin.x;
+    bounds.y += style->margin.y;
+    bounds.w -= style->margin.x * 2;
+    bounds.h -= style->margin.y * 2;
+
+    // TODO: Do we need this and it's use in the following check?
+    layout = win->layout;
+
+    in = (flags & NK_WINDOW_ROM || layout->flags & NK_WINDOW_ROM)
+        ? 0 : &ctx->input;
+
+    /* determine if the card has been pressed */
+    *pressed_state = nk_do_card(&ctx->last_widget_state, out, bounds, style,
+        in, &ctx->style.window.background, text_style);
+
+    /* calculate card content space */
+    // TODO: Make it so the additions may be uncommented
+    content.x = bounds.x + style->padding.x;// + style->border + style->rounding;
+    content.y = bounds.y + style->padding.y;// + style->border + style->rounding;
+    content.w = bounds.w - 2 * (style->padding.x);// + style->border + style->rounding);
+    content.h = bounds.h - 2 * (style->padding.y);// + style->border + style->rounding);
+
     /* initialize a fake window to create the panel from */
     nk_zero(&panel, sizeof(panel));
-    panel.bounds = bounds;
+    panel.bounds = content;
     panel.flags = flags;
     panel.buffer = win->buffer;
     panel.layout = (struct nk_panel*)nk_create_panel(ctx);
