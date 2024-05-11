@@ -42,3 +42,5 @@ canvas: generate
 skinning: generate
 	$(CC) $(CFLAGS) -o bin/skinning skinning.c $(LIBS)
 
+card: generate
+	$(CC) $(CFLAGS) -o bin/card card.c $(LIBS)
